@@ -204,8 +204,8 @@ namespace HyperionScreenCap
                     ex.ResultCode == SharpDX.DXGI.ResultCode.DeviceRemoved ||
                     ex.ResultCode == SharpDX.DXGI.ResultCode.InvalidCall)
                 {
-                    LOG.Warn($"Capture failed due to device loss: {ex.Message}. Attempting to reinitialize.");
-                    Reinitialize();
+                    LOG.Warn($"Capture failed due to device loss: {ex.Message}. Disposing and signaling for reinitialization.");
+                    Dispose();
                     throw new CapturePausedException("Capture is paused due to device loss.");
                 }
                 else
@@ -219,31 +219,6 @@ namespace HyperionScreenCap
                 LOG.Error($"Capture failed: {ex.Message}", ex);
                 throw;
             }
-        }
-
-        private void Reinitialize()
-        {
-            Dispose();
-            int attempt = 0;
-            const int maxAttempts = 10;
-            const int delayBetweenAttempts = 1000; // milliseconds
-
-            while (attempt < maxAttempts)
-            {
-                try
-                {
-                    attempt++;
-                    Initialize();
-                    LOG.Info("Reinitialized capture successfully.");
-                    return;
-                }
-                catch (Exception ex)
-                {
-                    LOG.Error($"Failed to reinitialize capture (attempt {attempt}/{maxAttempts}): {ex.Message}", ex);
-                    Thread.Sleep(delayBetweenAttempts);
-                }
-            }
-            throw new CapturePausedException("Failed to reinitialize capture after multiple attempts.");
         }
 
         private byte[] ManagedCapture()

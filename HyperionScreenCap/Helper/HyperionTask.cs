@@ -32,7 +32,7 @@ namespace HyperionScreenCap.Helper
 
         private void InitScreenCapture()
         {
-            if ( _screenCapture != null && !_screenCapture.IsDisposed() )
+            if (_screenCapture != null && !_screenCapture.IsDisposed())
             {
                 // Screen capture already initialized. Ignoring request.
                 return;
@@ -43,7 +43,7 @@ namespace HyperionScreenCap.Helper
                 _screenCapture.Initialize();
                 LOG.Info($"{this}: Screen capture initialized");
             }
-            catch ( Exception ex )
+            catch (Exception ex)
             {
                 _screenCapture?.Dispose();
                 throw new Exception("Failed to initialize screen capture: " + ex.Message, ex);
@@ -156,19 +156,78 @@ namespace HyperionScreenCap.Helper
 
         private void TransmitNextFrame()
         {
-            foreach ( HyperionClient hyperionClient in _hyperionClients )
+            try
+            {
+                byte[] imageData = _screenCapture.Capture();
+                foreach (HyperionClient hyperionClient in _hyperionClients)
+                {
+                    hyperionClient.SendImageData(imageData, _screenCapture.CaptureWidth, _screenCapture.CaptureHeight);
+                }
+            }
+            catch (CapturePausedException)
+            {
+                // Re-throw to be handled in StartCapture()
+                throw;
+            }
+            catch (Exception ex)
+            {
+                LOG.Error("Error occurred while capturing or sending image to server: " + ex.Message, ex);
+                throw;
+            }
+        }
+
+        private void StartCapture()
+        {
+            int captureAttempt = 1;
+            while (CaptureEnabled)
             {
                 try
                 {
-                    byte[] imageData = _screenCapture.Capture();
-                    hyperionClient.SendImageData(imageData, _screenCapture.CaptureWidth, _screenCapture.CaptureHeight);
+                    // Ensure screen capture and clients are instantiated
+                    if (_screenCapture == null || _screenCapture.IsDisposed())
+                    {
+                        InstantiateScreenCapture();
+                    }
+                    if (_hyperionClients == null || _hyperionClients.Count == 0)
+                    {
+                        InstantiateHyperionClients();
+                    }
 
-                    // Uncomment the following to enable debugging
-                    // MiscUtils.SaveRGBArrayToImageFile(imageData, _screenCapture.CaptureWidth, _screenCapture.CaptureHeight, AppConstants.DEBUG_IMAGE_FILE_NAME);
+                    InitScreenCapture();
+                    ConnectHyperionClients();
+                    captureAttempt = 1; // Reset capture attempt counter after successful initialization
+
+                    while (CaptureEnabled)
+                    {
+                        TransmitNextFrame();
+                        _screenCapture.DelayNextCapture();
+                    }
                 }
-                catch ( Exception ex )
+                catch (CapturePausedException ex)
                 {
-                    throw new Exception("Error occured while sending image to server: " + ex.Message, ex);
+                    LOG.Warn($"{this}: Capture paused: {ex.Message}. Disposing and preparing to reinitialize.");
+                    _screenCapture?.Dispose();
+                    _screenCapture = null;
+
+                    DisposeHyperionClients();
+                    Thread.Sleep(AppConstants.CAPTURE_PAUSED_RETRY_DELAY); // Prevent rapid looping
+                }
+                catch (Exception ex)
+                {
+                    LOG.Error($"{this}: Exception in screen capture attempt: {captureAttempt}", ex);
+                    if (captureAttempt >= AppConstants.REINIT_CAPTURE_AFTER_ATTEMPTS)
+                    {
+                        LOG.Info($"{this}: Disposing resources and preparing to reinitialize.");
+                        _screenCapture?.Dispose();
+                        _screenCapture = null;
+                        DisposeHyperionClients();
+                        captureAttempt = 1; // Reset capture attempt counter
+                    }
+                    else
+                    {
+                        Thread.Sleep(AppConstants.CAPTURE_FAILED_COOLDOWN_MILLIS);
+                        captureAttempt++;
+                    }
                 }
             }
         }
@@ -178,45 +237,6 @@ namespace HyperionScreenCap.Helper
             DisableCapture();
             Thread.Sleep(1000); // Wait a bit before restarting
             EnableCapture();
-        }
-
-        private void StartCapture()
-        {
-            InstantiateScreenCapture();
-            InstantiateHyperionClients();
-            int captureAttempt = 1;
-            while (CaptureEnabled)
-            {
-                try
-                {
-                    InitScreenCapture();
-                    ConnectHyperionClients();
-                    while (CaptureEnabled)
-                    {
-                        TransmitNextFrame();
-                        _screenCapture.DelayNextCapture();
-                    }
-                }
-                catch (Exception ex)
-                {
-                    LOG.Error($"{this}: Exception in screen capture attempt: {captureAttempt}", ex);
-                    if (captureAttempt > AppConstants.REINIT_CAPTURE_AFTER_ATTEMPTS)
-                    {
-                        LOG.Info($"{this}: Attempting to recreate screen capture object and reconnect to Hyperion");
-                        RecreateScreenCaptureAndReconnect();
-                        return; // Exit this method, as a new capture thread has been started
-                    }
-                    Thread.Sleep(AppConstants.CAPTURE_FAILED_COOLDOWN_MILLIS);
-                    captureAttempt++;
-
-                    if (captureAttempt > AppConstants.MAX_CAPTURE_ATTEMPTS)
-                    {
-                        LOG.Error($"{this}: Max screen capture attempts reached. Disabling capture.");
-                        CaptureEnabled = false;
-                        OnCaptureDisabled?.Invoke(this, EventArgs.Empty);
-                    }
-                }
-            }
         }
 
         private void RecreateScreenCaptureAndReconnect()
