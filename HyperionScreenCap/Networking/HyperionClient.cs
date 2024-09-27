@@ -30,33 +30,33 @@ namespace HyperionScreenCap.Networking
             _messageDuration = messageDuration;
         }
 
-        public void Connect()
+        protected abstract void SendRegistrationMessage();
+        public abstract void SendInitialFrame(int width, int height);
+
+        public virtual void Connect()
         {
-            if ( _initLock || IsConnected() )
-            {
-                LOG.Info($"{this} already connected. Skipping request.");
-                return;
-            }
             _initLock = true;
             LOG.Info($"{this} Init lock set");
 
-            _socket = new TcpClient
-            {
-                SendTimeout = AppConstants.PROTO_CLIENT_SOCKET_TIMEOUT,
-                ReceiveTimeout = AppConstants.PROTO_CLIENT_SOCKET_TIMEOUT
-            };
-
             try
             {
+                _socket = new TcpClient
+                {
+                    SendTimeout = AppConstants.PROTO_CLIENT_SOCKET_TIMEOUT,
+                    ReceiveTimeout = AppConstants.PROTO_CLIENT_SOCKET_TIMEOUT
+                };
+
                 _socket.Connect(_host, _port);
                 _stream = _socket.GetStream();
+                Initialized = true;
+
+                SendRegistrationMessage(); // Moved here to ensure it's called after connecting
             }
             finally
             {
                 _initLock = false;
                 LOG.Info($"{this} Init lock unset");
             }
-            Initialized = true;
         }
 
         public bool IsConnected()

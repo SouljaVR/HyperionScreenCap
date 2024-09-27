@@ -1,6 +1,7 @@
 ﻿using System;
 using Google.ProtocolBuffers;
 using proto;
+using static Humanizer.In;
 
 namespace HyperionScreenCap.Networking
 {
@@ -77,6 +78,23 @@ namespace HyperionScreenCap.Networking
         public override String ToString()
         {
             return $"ProtoClient[{_host}:{_port} ({_priority})]";
+        }
+
+        protected override void SendRegistrationMessage()
+        {
+            // Assuming there's no specific RegisterRequest, we'll use the general HyperionRequest
+            var request = proto.HyperionRequest.CreateBuilder()
+                .SetCommand(proto.HyperionRequest.Types.Command.COLOR) // Use an existing command
+                .Build();
+
+            SendRequest(request);
+        }
+
+        public override void SendInitialFrame(int width, int height)
+        {
+            // Send a black frame to initialize the connection
+            byte[] blackFrame = new byte[width * height * 3];
+            SendImageDataMessage(blackFrame, width, height);
         }
     }
 }

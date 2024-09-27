@@ -33,20 +33,40 @@ public struct RawImage : IFlatbufferObject
   public int Height { get { int o = __p.__offset(8); return o != 0 ? __p.bb.GetInt(o + __p.bb_pos) : (int)-1; } }
   public bool MutateHeight(int height) { int o = __p.__offset(8); if (o != 0) { __p.bb.PutInt(o + __p.bb_pos, height); return true; } else { return false; } }
 
-  public static Offset<hyperionnet.RawImage> CreateRawImage(FlatBufferBuilder builder,
-      VectorOffset dataOffset = default(VectorOffset),
-      int width = -1,
-      int height = -1) {
+public static Offset<hyperionnet.RawImage> CreateRawImage(FlatBufferBuilder builder,
+    VectorOffset dataOffset = default(VectorOffset),
+    int width = -1,
+    int height = -1)
+{
     builder.StartTable(3);
     RawImage.AddHeight(builder, height);
     RawImage.AddWidth(builder, width);
-    RawImage.AddData(builder, dataOffset);
+    if (dataOffset.Value != 0) // Check if data is not null
+    {
+        RawImage.AddData(builder, dataOffset);
+    }
     return RawImage.EndRawImage(builder);
-  }
+}
 
   public static void StartRawImage(FlatBufferBuilder builder) { builder.StartTable(3); }
   public static void AddData(FlatBufferBuilder builder, VectorOffset dataOffset) { builder.AddOffset(0, dataOffset.Value, 0); }
-  public static VectorOffset CreateDataVector(FlatBufferBuilder builder, byte[] data) { builder.StartVector(1, data.Length, 1); for (int i = data.Length - 1; i >= 0; i--) builder.AddByte(data[i]); return builder.EndVector(); }
+
+  public static VectorOffset CreateDataVector(FlatBufferBuilder builder, byte[] data)
+  {
+      if (data == null || data.Length == 0) // Handle null or empty data case
+      {
+          // Return an empty vector if data is null or empty to avoid crashing
+          return builder.EndVector();
+      }
+
+      builder.StartVector(1, data.Length, 1);
+      for (int i = data.Length - 1; i >= 0; i--)
+      {
+          builder.AddByte(data[i]);
+      }
+      return builder.EndVector();
+  }
+
   public static VectorOffset CreateDataVectorBlock(FlatBufferBuilder builder, byte[] data) { builder.StartVector(1, data.Length, 1); builder.Add(data); return builder.EndVector(); }
   public static void StartDataVector(FlatBufferBuilder builder, int numElems) { builder.StartVector(1, numElems, 1); }
   public static void AddWidth(FlatBufferBuilder builder, int width) { builder.AddInt(1, width, -1); }

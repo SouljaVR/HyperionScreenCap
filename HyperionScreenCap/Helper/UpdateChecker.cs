@@ -24,14 +24,14 @@ namespace HyperionScreenCap.Helper
         public UpdateChecker()
         {
             _restClient = new RestClient(GITHUB_API_BASE_URL);
-            RestRequest request = new RestRequest(GITHUB_LATEST_RELEASE_GET_URL, Method.GET);
-            IRestResponse<Release> response = _restClient.Execute<Release>(request);
+            RestRequest request = new RestRequest(GITHUB_LATEST_RELEASE_GET_URL, Method.Get); // Updated this line
+            RestResponse<Release> response = _restClient.Execute<Release>(request); // Updated this line
             LatestRelease = response.Data;
         }
 
         public bool IsUpdateAvailable()
         {
-            if ( LatestRelease != null )
+            if (LatestRelease != null)
             {
                 Version currVer = Assembly.GetExecutingAssembly().GetName().Version;
                 Version newVer;
@@ -39,12 +39,12 @@ namespace HyperionScreenCap.Helper
                 {
                     newVer = new Version(LatestRelease.tag_name.Replace(TAG_NAME_PREFIX, ""));
                 }
-                catch ( Exception ex )
+                catch (Exception ex)
                 {
                     LOG.Error($"Tag name ({LatestRelease.tag_name}) for the latest release has an unexpected format", ex);
                     newVer = ZERO_VERSION; // Fall back on 0.0
                 }
-                if ( newVer > currVer )
+                if (newVer > currVer)
                     return true;
             }
             return false;
@@ -54,7 +54,7 @@ namespace HyperionScreenCap.Helper
         {
             LOG.Info("Starting update check");
             UpdateChecker updateChecker = new UpdateChecker();
-            if ( updateChecker.IsUpdateAvailable() )
+            if (updateChecker.IsUpdateAvailable())
             {
                 Release latestRelease = updateChecker.LatestRelease;
                 StringBuilder bodyBuilder = new StringBuilder();
@@ -66,7 +66,7 @@ namespace HyperionScreenCap.Helper
                 bodyBuilder.Append("Would you like to download the update?");
                 DialogResult dialogResult = MessageBox.Show(bodyBuilder.ToString(), "Hyperion Screen Capture Update Available",
                     MessageBoxButtons.YesNo, MessageBoxIcon.Information);
-                if ( dialogResult == DialogResult.Yes )
+                if (dialogResult == DialogResult.Yes)
                 {
                     LOG.Info("Starting latest release download");
                     Process.Start(latestRelease.assets[0].browser_download_url);
@@ -74,7 +74,7 @@ namespace HyperionScreenCap.Helper
             }
             else
             {
-                if ( !isStartupCheck )
+                if (!isStartupCheck)
                 {
                     MessageBox.Show("No updates available. If you think this is an error, please check your internet connection.",
                         "Hyperion Screen Capture Update Check", MessageBoxButtons.OK);

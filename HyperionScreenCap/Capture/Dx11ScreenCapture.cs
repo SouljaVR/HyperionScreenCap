@@ -12,6 +12,7 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
+using log4net;
 
 namespace HyperionScreenCap
 {
@@ -41,8 +42,14 @@ namespace HyperionScreenCap
         private bool _desktopDuplicatorInvalid;
         private bool _disposed;
 
+        private int _reinitializationAttempts = 0;
+        private const int MAX_REINITIALIZATION_ATTEMPTS = 5;
+        private const int REINITIALIZATION_DELAY_MS = 1000;
+
         public int CaptureWidth { get; private set; }
         public int CaptureHeight { get; private set; }
+
+        private static readonly ILog LOG = LogManager.GetLogger(typeof(DX11ScreenCapture));
 
         public static String GetAvailableMonitors()
         {
@@ -78,31 +85,73 @@ namespace HyperionScreenCap
 
         public void Initialize()
         {
-            int mipLevels;
-            if ( _scalingFactor == 1 )
-                mipLevels = 1;
-            else if ( _scalingFactor > 0 && _scalingFactor % 2 == 0 )
+            Dispose();
+
+            int retryCount = 0;
+            const int maxRetries = 5;
+            const int retryDelay = 1000; // 1 second
+
+            while (retryCount < maxRetries)
             {
-                /// Mip level for a scaling factor other than one is computed as follows:
-                /// 2^n = 2 + n - 1 where LHS is the scaling factor and RHS is the MipLevels value.
+                try
+                {
+                    InitializeInternal();
+                    return; // If successful, exit the method
+                }
+                catch (SharpDXException ex)
+                {
+                    LOG.Error($"SharpDX exception during initialization (attempt {retryCount + 1}/{maxRetries}): {ex.Message}");
+                    retryCount++;
+                    if (retryCount >= maxRetries)
+                    {
+                        throw new Exception("Failed to initialize DX11 screen capture after multiple attempts", ex);
+                    }
+                    Thread.Sleep(retryDelay);
+                }
+                catch (Exception ex)
+                {
+                    LOG.Error($"Unexpected exception during initialization: {ex.Message}");
+                    throw;
+                }
+            }
+            InitDesktopDuplicator();
+        }
+
+        private void InitializeInternal()
+        {
+            // Move all the existing initialization code here
+            int mipLevels;
+            if (_scalingFactor == 1)
+                mipLevels = 1;
+            else if (_scalingFactor > 0 && _scalingFactor % 2 == 0)
+            {
                 _scalingFactorLog2 = Convert.ToInt32(Math.Log(_scalingFactor, 2));
                 mipLevels = 2 + _scalingFactorLog2 - 1;
             }
             else
-                throw new Exception("Invalid scaling factor. Allowed valued are 1, 2, 4, etc.");
+                throw new Exception("Invalid scaling factor. Allowed values are 1, 2, 4, etc.");
 
-            // Create DXGI Factory1
+            _factory?.Dispose();
+            _adapter?.Dispose();
+            _output?.Dispose();
+            _output1?.Dispose();
+            _device?.Dispose();
+            _stagingTexture?.Dispose();
+            _smallerTexture?.Dispose();
+            _smallerTextureView?.Dispose();
+
             _factory = new Factory1();
             _adapter = _factory.GetAdapter1(_adapterIndex);
 
-            // Create device from Adapter
             _device = new SharpDX.Direct3D11.Device(_adapter);
 
-            // Get DXGI.Output
             _output = _adapter.GetOutput(_monitorIndex);
+            if (_output == null)
+            {
+                throw new Exception($"No output found for adapter {_adapterIndex} and monitor {_monitorIndex}");
+            }
             _output1 = _output.QueryInterface<Output1>();
 
-            // Width/Height of desktop to capture
             var desktopBounds = _output.Description.DesktopBounds;
             _width = desktopBounds.Right - desktopBounds.Left;
             _height = desktopBounds.Bottom - desktopBounds.Top;
@@ -110,7 +159,6 @@ namespace HyperionScreenCap
             CaptureWidth = _width / _scalingFactor;
             CaptureHeight = _height / _scalingFactor;
 
-            // Create Staging texture CPU-accessible
             var stagingTextureDesc = new Texture2DDescription
             {
                 CpuAccessFlags = CpuAccessFlags.Read,
@@ -126,7 +174,6 @@ namespace HyperionScreenCap
             };
             _stagingTexture = new Texture2D(_device, stagingTextureDesc);
 
-            // Create smaller texture to downscale the captured image
             var smallerTextureDesc = new Texture2DDescription
             {
                 CpuAccessFlags = CpuAccessFlags.None,
@@ -152,25 +199,123 @@ namespace HyperionScreenCap
 
         private void InitDesktopDuplicator()
         {
-            // Duplicate the output
-            _duplicatedOutput = _output1.DuplicateOutput(_device);
+            try
+            {
+                _duplicatedOutput?.Dispose();
+                _duplicatedOutput = _output1.DuplicateOutput(_device);
+                _desktopDuplicatorInvalid = false;
+                LOG.Debug("Desktop duplicator initialized successfully.");
+            }
+            catch (SharpDXException ex)
+            {
+                LOG.Error($"SharpDXException in InitDesktopDuplicator: {ex.Message}", ex);
+                _desktopDuplicatorInvalid = true;
+                throw;
+            }
+        }
 
-            _desktopDuplicatorInvalid = false;
+        private void ReinitializeOutputAndDevice()
+        {
+            LOG.Debug("Reinitializing Output and Device...");
+            try
+            {
+                _factory?.Dispose();
+                _adapter?.Dispose();
+                _output?.Dispose();
+                _output1?.Dispose();
+                _device?.Dispose();
+
+                _factory = new Factory1();
+                if (_factory == null) throw new InvalidOperationException("Failed to create Factory1");
+
+                _adapter = _factory.GetAdapter1(_adapterIndex);
+                if (_adapter == null) throw new InvalidOperationException($"No adapter found for index {_adapterIndex}");
+
+                _device = new SharpDX.Direct3D11.Device(_adapter);
+                if (_device == null) throw new InvalidOperationException("Failed to create Device");
+
+                _output = _adapter.GetOutput(_monitorIndex);
+                if (_output == null) throw new InvalidOperationException($"No output found for adapter {_adapterIndex} and monitor {_monitorIndex}");
+
+                _output1 = _output.QueryInterface<Output1>();
+                if (_output1 == null) throw new InvalidOperationException("Failed to query Output1 interface");
+
+                LOG.Info("Successfully reinitialized Output and Device.");
+            }
+            catch (Exception ex)
+            {
+                LOG.Error($"Failed to reinitialize Output and Device: {ex.Message}", ex);
+                throw;
+            }
+        }
+
+        private void EnsureDeviceInitialized()
+        {
+            if (_device == null || _device.IsDisposed)
+            {
+                LOG.Warn("Device is null or disposed. Attempting to reinitialize...");
+                try
+                {
+                    ReinitializeOutputAndDevice();
+                }
+                catch (Exception ex)
+                {
+                    LOG.Error($"Failed to reinitialize device: {ex.Message}", ex);
+                    throw new InvalidOperationException("Failed to reinitialize device", ex);
+                }
+            }
         }
 
         public byte[] Capture()
         {
-            if ( _desktopDuplicatorInvalid )
+            if (_desktopDuplicatorInvalid)
             {
-                _duplicatedOutput?.Dispose();
-                InitDesktopDuplicator();
+                LOG.Warn("Desktop duplicator is invalid. Attempting to reinitialize...");
+                if (!ReinitializeDesktopDuplicator())
+                {
+                    throw new InvalidOperationException("Failed to reinitialize desktop duplicator after multiple attempts");
+                }
             }
 
             _captureTimer.Restart();
-            byte[] response = ManagedCapture();
-            _captureTimer.Stop();
+            try
+            {
+                byte[] response = ManagedCapture();
+                _captureTimer.Stop();
+                _reinitializationAttempts = 0; // Reset the counter on successful capture
+                return response;
+            }
+            catch (InvalidOperationException ex)
+            {
+                LOG.Error($"Capture failed: {ex.Message}", ex);
+                _desktopDuplicatorInvalid = true;
+                throw;
+            }
+        }
 
-            return response;
+        private bool ReinitializeDesktopDuplicator()
+        {
+            while (_reinitializationAttempts < MAX_REINITIALIZATION_ATTEMPTS)
+            {
+                try
+                {
+                    _reinitializationAttempts++;
+                    LOG.Info($"Reinitialization attempt {_reinitializationAttempts} of {MAX_REINITIALIZATION_ATTEMPTS}");
+
+                    // Only reinitialize the desktop duplicator
+                    InitDesktopDuplicator();
+
+                    _desktopDuplicatorInvalid = false;
+                    LOG.Info("Desktop duplicator reinitialized successfully.");
+                    return true;
+                }
+                catch (Exception ex)
+                {
+                    LOG.Error($"Failed to reinitialize desktop duplicator: {ex.Message}", ex);
+                    Thread.Sleep(REINITIALIZATION_DELAY_MS * _reinitializationAttempts);
+                }
+            }
+            return false;
         }
 
         private byte[] ManagedCapture()
@@ -180,31 +325,42 @@ namespace HyperionScreenCap
 
             try
             {
+                EnsureDeviceInitialized();
+
                 try
                 {
                     // Try to get duplicated frame within given time
                     _duplicatedOutput.AcquireNextFrame(_frameCaptureTimeout, out duplicateFrameInformation, out screenResource);
 
-                    if ( duplicateFrameInformation.LastPresentTime == 0 && _lastCapturedFrame != null )
+                    if (duplicateFrameInformation.LastPresentTime == 0 && _lastCapturedFrame != null)
                         return _lastCapturedFrame;
                 }
-                catch ( SharpDXException ex )
+                catch (SharpDXException ex)
                 {
-                    if ( ex.ResultCode.Code == SharpDX.DXGI.ResultCode.WaitTimeout.Code && _lastCapturedFrame != null )
+                    if (ex.ResultCode.Code == SharpDX.DXGI.ResultCode.WaitTimeout.Code && _lastCapturedFrame != null)
                         return _lastCapturedFrame;
 
-                    if ( ex.ResultCode.Code == SharpDX.DXGI.ResultCode.AccessLost.Code )
+                    if (ex.ResultCode.Code == SharpDX.DXGI.ResultCode.AccessLost.Code)
+                    {
                         _desktopDuplicatorInvalid = true;
+                        throw new InvalidOperationException("Desktop duplicator access lost", ex);
+                    }
 
-                    throw ex;
+                    throw;
                 }
 
                 // Check if scaling is used
-                if ( CaptureWidth != _width )
+                if (CaptureWidth != _width)
                 {
                     // Copy resource into memory that can be accessed by the CPU
-                    using ( var screenTexture2D = screenResource.QueryInterface<Texture2D>() )
+                    using (var screenTexture2D = screenResource.QueryInterface<Texture2D>())
+                    {
+                        if (_device == null || _device.ImmediateContext == null)
+                        {
+                            throw new InvalidOperationException("Device or ImmediateContext is null");
+                        }
                         _device.ImmediateContext.CopySubresourceRegion(screenTexture2D, 0, null, _smallerTexture, 0);
+                    }
 
                     // Generates the mipmap of the screen
                     _device.ImmediateContext.GenerateMips(_smallerTextureView);
@@ -215,8 +371,14 @@ namespace HyperionScreenCap
                 else
                 {
                     // Copy resource into memory that can be accessed by the CPU
-                    using ( var screenTexture2D = screenResource.QueryInterface<Texture2D>() )
+                    using (var screenTexture2D = screenResource.QueryInterface<Texture2D>())
+                    {
+                        if (_device == null || _device.ImmediateContext == null)
+                        {
+                            throw new InvalidOperationException("Device or ImmediateContext is null");
+                        }
                         _device.ImmediateContext.CopyResource(screenTexture2D, _stagingTexture);
+                    }
                 }
 
                 // Get the desktop capture texture
@@ -224,13 +386,18 @@ namespace HyperionScreenCap
                 _lastCapturedFrame = ToRGBArray(mapSource);
                 return _lastCapturedFrame;
             }
+            catch (Exception ex)
+            {
+                LOG.Error($"Error in ManagedCapture: {ex.Message}", ex);
+                throw;
+            }
             finally
             {
                 screenResource?.Dispose();
                 // Fixed OUT_OF_MEMORY issue on AMD Radeon cards. Ignoring all exceptions during unmapping.
-                try { _device.ImmediateContext.UnmapSubresource(_stagingTexture, 0); } catch { };
+                try { _device?.ImmediateContext?.UnmapSubresource(_stagingTexture, 0); } catch { };
                 // Ignore DXGI_ERROR_INVALID_CALL, DXGI_ERROR_ACCESS_LOST errors since capture is already complete
-                try { _duplicatedOutput.ReleaseFrame(); } catch { }
+                try { _duplicatedOutput?.ReleaseFrame(); } catch { }
             }
         }
 

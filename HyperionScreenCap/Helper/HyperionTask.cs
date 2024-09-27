@@ -21,6 +21,8 @@ namespace HyperionScreenCap.Helper
         public bool CaptureEnabled { get; private set; }
         private Thread _captureThread;
 
+        public event EventHandler OnCaptureDisabled;
+
         public HyperionTask(HyperionTaskConfiguration configuration, NotificationUtils notificationUtils)
         {
             this._configuration = configuration;
@@ -103,32 +105,52 @@ namespace HyperionScreenCap.Helper
 
         private void ConnectHyperionClients()
         {
-            foreach ( HyperionClient hyperionClient in _hyperionClients )
+            foreach (HyperionClient hyperionClient in _hyperionClients)
             {
-                if ( hyperionClient.IsConnected() )
-                {
-                    // Hyperion client already initialized. Ignoring request.
-                    return;
-                }
                 try
                 {
                     LOG.Info($"{this}: Connecting {hyperionClient}");
-                    hyperionClient?.Dispose();
-                    // TODO: check for memory leak in each of the Hyperion Clients
-                    hyperionClient.Connect();
-                    // Double checking since sometimes exceptions are not thrown even if connection fails
-                    if ( hyperionClient.IsConnected() )
+                    hyperionClient.Dispose(); // Ensure any existing connection is closed
+                    hyperionClient.Connect(); // This will now send registration
+                    if (hyperionClient.IsConnected())
                     {
                         LOG.Info($"{this}: {hyperionClient} connected");
                         _notificationUtils.Info($"Connected to Hyperion server using {hyperionClient}!");
+
+                        // Only send initial frame if screen capture is initialized
+                        if (_screenCapture != null)
+                        {
+                            hyperionClient.SendInitialFrame(_screenCapture.CaptureWidth, _screenCapture.CaptureHeight);
+
+                            // Send an actual captured frame immediately
+                            byte[] initialFrame = CaptureInitialFrame();
+                            hyperionClient.SendImageData(initialFrame, _screenCapture.CaptureWidth, _screenCapture.CaptureHeight);
+                        }
                     }
                     else
+                    {
                         throw new Exception(GetHyperionInitFailedMsg(hyperionClient));
+                    }
                 }
-                catch ( Exception ex )
+                catch (Exception ex)
                 {
-                    throw new Exception(GetHyperionInitFailedMsg(hyperionClient), ex);
+                    LOG.Error($"{this}: Failed to connect to Hyperion server: {ex.Message}", ex);
+                    throw;
                 }
+            }
+        }
+
+        private byte[] CaptureInitialFrame()
+        {
+            try
+            {
+                return _screenCapture.Capture();
+            }
+            catch (Exception ex)
+            {
+                LOG.Error($"{this}: Failed to capture initial frame: {ex.Message}", ex);
+                // Return a black frame as a fallback
+                return new byte[_screenCapture.CaptureWidth * _screenCapture.CaptureHeight * 3];
             }
         }
 
@@ -151,43 +173,70 @@ namespace HyperionScreenCap.Helper
             }
         }
 
+        public void RestartCapture()
+        {
+            DisableCapture();
+            Thread.Sleep(1000); // Wait a bit before restarting
+            EnableCapture();
+        }
+
         private void StartCapture()
         {
             InstantiateScreenCapture();
             InstantiateHyperionClients();
             int captureAttempt = 1;
-            while ( CaptureEnabled )
+            while (CaptureEnabled)
             {
-                try // This block will help retry capture before giving up
+                try
                 {
                     InitScreenCapture();
                     ConnectHyperionClients();
-                    TransmitNextFrame();
-                    _screenCapture.DelayNextCapture();
-                    captureAttempt = 1; // Reset attempt count
+                    while (CaptureEnabled)
+                    {
+                        TransmitNextFrame();
+                        _screenCapture.DelayNextCapture();
+                    }
                 }
-                catch ( Exception ex )
+                catch (Exception ex)
                 {
                     LOG.Error($"{this}: Exception in screen capture attempt: {captureAttempt}", ex);
-                    if ( captureAttempt > AppConstants.REINIT_CAPTURE_AFTER_ATTEMPTS )
+                    if (captureAttempt > AppConstants.REINIT_CAPTURE_AFTER_ATTEMPTS)
                     {
-                        // After a few attempt, try disposing screen capture object as well
-                        _screenCapture?.Dispose();
-                        LOG.Info($"{this}: Will re-initialize screen capture on retry");
+                        LOG.Info($"{this}: Attempting to recreate screen capture object and reconnect to Hyperion");
+                        RecreateScreenCaptureAndReconnect();
+                        return; // Exit this method, as a new capture thread has been started
                     }
-                    if ( ++captureAttempt == AppConstants.MAX_CAPTURE_ATTEMPTS )
+                    Thread.Sleep(AppConstants.CAPTURE_FAILED_COOLDOWN_MILLIS);
+                    captureAttempt++;
+
+                    if (captureAttempt > AppConstants.MAX_CAPTURE_ATTEMPTS)
                     {
-                        LOG.Error($"{this}: Max screen capture attempts reached. Giving up.");
-                        _notificationUtils.Error(ex.Message);
+                        LOG.Error($"{this}: Max screen capture attempts reached. Disabling capture.");
                         CaptureEnabled = false;
-                    }
-                    else
-                    {
-                        LOG.Info($"{this}: Waiting before next screen capture attempt");
-                        Thread.Sleep(AppConstants.CAPTURE_FAILED_COOLDOWN_MILLIS);
+                        OnCaptureDisabled?.Invoke(this, EventArgs.Empty);
                     }
                 }
             }
+        }
+
+        private void RecreateScreenCaptureAndReconnect()
+        {
+            LOG.Info($"{this}: Recreating screen capture and reconnecting to Hyperion");
+
+            // Dispose of existing resources
+            _screenCapture?.Dispose();
+            _screenCapture = null;
+
+            foreach (var client in _hyperionClients)
+            {
+                client.Dispose();
+            }
+            _hyperionClients.Clear();
+
+            // Wait a bit before reconnecting
+            Thread.Sleep(2000);
+
+            // Let StartCapture handle the reinitialization
         }
 
         private void TryStartCapture()
@@ -207,10 +256,18 @@ namespace HyperionScreenCap.Helper
         public void EnableCapture()
         {
             LOG.Info($"{this}: Enabling screen capture");
-            CaptureEnabled = true;
-            _captureThread = new Thread(TryStartCapture) { IsBackground = true };
-            _captureThread.Start();
+            if (_captureThread == null || !_captureThread.IsAlive)
+            {
+                CaptureEnabled = true;
+                _captureThread = new Thread(TryStartCapture) { IsBackground = true };
+                _captureThread.Start();
+            }
+            else
+            {
+                LOG.Warn($"{this}: Capture thread is already running");
+            }
         }
+
 
         public void DisableCapture()
         {

@@ -254,14 +254,16 @@ namespace HyperionScreenCap
             }
 
             LOG.Info($"Enabling {SettingsManager.HyperionTaskConfigurations.Count} screen capture(s)");
-            foreach ( HyperionTaskConfiguration configuration in SettingsManager.HyperionTaskConfigurations)
+            foreach (HyperionTaskConfiguration configuration in SettingsManager.HyperionTaskConfigurations)
             {
                 if (configuration.Enabled)
                 {
                     HyperionTask hyperionTask = new HyperionTask(configuration, _notificationUtils);
+                    hyperionTask.OnCaptureDisabled += HyperionTask_OnCaptureDisabled;
                     hyperionTask.EnableCapture();
                     _hyperionTasks.Add(hyperionTask);
-                } else
+                }
+                else
                 {
                     LOG.Info($"Capture task with ID {configuration.Id} is disabled. Skipping.");
                 }
@@ -269,6 +271,20 @@ namespace HyperionScreenCap
             CaptureEnabled = true;
             new Thread(DisableCaptureOnFailure) { IsBackground = true }.Start();
             LOG.Info($"Enabled {_hyperionTasks.Count} screen capture(s)");
+        }
+
+        private void HyperionTask_OnCaptureDisabled(object sender, EventArgs e)
+        {
+            if (InvokeRequired)
+            {
+                Invoke(new Action(() => HyperionTask_OnCaptureDisabled(sender, e)));
+                return;
+            }
+
+            LOG.Warn("Capture disabled event received. Attempting to restart capture.");
+            ToggleCapture(CaptureCommand.OFF);
+            Thread.Sleep(2000); // Wait a bit before restarting
+            ToggleCapture(CaptureCommand.ON);
         }
 
         private void DisableCapture()
@@ -285,19 +301,40 @@ namespace HyperionScreenCap
 
         private void DisableCaptureOnFailure()
         {
-            while ( CaptureEnabled )
+            int consecutiveFailures = 0;
+            while (CaptureEnabled)
             {
-                foreach ( HyperionTask task in _hyperionTasks )
+                bool allTasksFailed = true;
+                foreach (HyperionTask task in _hyperionTasks)
                 {
-                    if ( !task.CaptureEnabled )
+                    if (task.CaptureEnabled)
                     {
-                        // We have found a task for which capture has been disabled due to failure
-                        // Turning off capture and exiting this thread
-                        LOG.Error($"Found {task} with capture disabled due to failure. Issuing OFF command.");
-                        ToggleCapture(CaptureCommand.OFF, false, false);
-                        return;
+                        allTasksFailed = false;
+                    }
+                    else
+                    {
+                        LOG.Error($"Found {task} with capture disabled due to failure. Attempting to restart.");
+                        task.RestartCapture();
                     }
                 }
+
+                if (allTasksFailed)
+                {
+                    consecutiveFailures++;
+                    if (consecutiveFailures > 5) // Arbitrary number, adjust as needed
+                    {
+                        LOG.Error("All tasks failed consecutively. Performing full restart.");
+                        ToggleCapture(CaptureCommand.OFF, false, false);
+                        Thread.Sleep(2000); // Wait a bit before restarting
+                        ToggleCapture(CaptureCommand.ON, false, false);
+                        consecutiveFailures = 0;
+                    }
+                }
+                else
+                {
+                    consecutiveFailures = 0;
+                }
+
                 Thread.Sleep(AppConstants.CAPTURE_FAILURE_DETECTION_INTERVAL);
             }
         }

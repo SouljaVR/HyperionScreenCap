@@ -1,6 +1,7 @@
 ﻿using System;
 using hyperionnet;
 using FlatBuffers;
+using static Humanizer.In;
 
 namespace HyperionScreenCap.Networking
 {
@@ -55,11 +56,29 @@ namespace HyperionScreenCap.Networking
             var messageSize = messageToSend.Length;
             sendMessageSize(messageSize);
             _stream.Write(messageToSend, 0, messageSize);
+            _stream.Flush(); // Ensure data is sent immediately
         }
 
         public override String ToString()
         {
             return $"FbsClinet[{_host}:{_port} ({_priority})]";
+        }
+
+        protected override void SendRegistrationMessage()
+        {
+            var builder = new FlatBufferBuilder(64);
+            var originOffset = builder.CreateString("HyperionScreenCap");
+            var registerOffset = Register.CreateRegister(builder, originOffset, _priority);
+            var requestOffset = Request.CreateRequest(builder, Command.Register, registerOffset.Value);
+            builder.Finish(requestOffset.Value);
+            SendFinishedMessage(builder);
+        }
+
+        public override void SendInitialFrame(int width, int height)
+        {
+            // Send a black frame to initialize the connection
+            byte[] blackFrame = new byte[width * height * 3];
+            SendImageDataMessage(blackFrame, width, height);
         }
     }
 }
