@@ -11,6 +11,11 @@ namespace HyperionScreenCap.Config
         public const int MAX_CAPTURE_ATTEMPTS = 45;
 
         /// <summary>
+        /// Delay in milliseconds before retrying after a pause
+        /// </summary>
+        public const int CAPTURE_PAUSED_RETRY_DELAY = 2000;
+
+        /// <summary>
         /// Number of screen capture failure attemps after which screen capture should be re-initialized.
         /// </summary>
         public const int REINIT_CAPTURE_AFTER_ATTEMPTS = 15;
